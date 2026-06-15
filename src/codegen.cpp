@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+// регистр xmm / rax
 static bool is_float_kind(TypeKind k) {
     return k == TYPE_FLOAT32 || k == TYPE_FLOAT64;
 }
@@ -23,31 +24,29 @@ static bool is_uint_kind(TypeKind k) {
 static bool is_int_kind(TypeKind k) {
     return is_sint_kind(k) || is_uint_kind(k) || k == TYPE_BOOL;
 }
-
-// одно поле структуры внутри StructLayout — смещение от начала структуры в байтах
 struct StructField {
     std::string name;
-    int offset;
+    int offset; // смещение от начала
     TypeKind kind;
-    std::string sname; // имя типа, если kind == TYPE_NAMED (другая структура/алиас)
-    TypeKind elem_kind; // тип элемента, если kind == TYPE_ARRAY
-    int array_n; // длина массива, если kind == TYPE_ARRAY
+    std::string sname; // имя структуры если псевдоним
+    TypeKind elem_kind; // тип элемента (для массива)
+    int array_n; // длина массива
 };
 
-// раскладка структуры в памяти: список полей со смещениями + общий размер в байтах
+// структура в памяти -список полей со смещениями и общий размер в байтах
 struct StructLayout {
     std::vector<StructField> fields;
     int total_size;
 };
 
-// тип одного параметра функции — нужен чтобы решить, идёт ли аргумент в xmm или в обычный регистр
+// тип первого параметра функции для помещения аргументов в регистр
 struct FuncParam {
     TypeKind kind;
     bool is_float;
     std::string sname;
 };
 
-// сведения о функции, собранные на предварительном проходе collect_info
+// сведения о функции
 struct FuncInfo {
     std::vector<FuncParam> params;
     TypeKind ret_kind;
@@ -58,7 +57,7 @@ struct FuncInfo {
 
 // локальная переменная/параметр: смещение от rbp + информация о типе для кодогена
 struct CgVar {
-    int offset = 0;
+    int offset = 0; // смещение от rbp
     TypeKind kind = TYPE_INT64;
     std::string sname; // имя структуры/алиаса, если kind == TYPE_NAMED
     TypeKind elem_kind = TYPE_INT64; // тип элемента массива
@@ -80,10 +79,10 @@ struct CgenCtx {
     std::vector<Scope> scopes;
     std::string ret_label; // метка epilogue функции; return прыгает сюда, а не делает ret сам
     TypeKind ret_kind = TYPE_VOID;
-    std::vector<std::string> break_stack; // стек меток конца цикла для break (вложенные циклы)
+    std::vector<std::string> break_stack; // стек меток конца цикла для вложенных циклов
     std::vector<std::string> cont_stack; // стек меток условия цикла для continue
-    std::vector<std::string> strlits; // строковые литералы — собираем во время обхода, выдаём в .rodata в конце
-    std::vector<double> flitvals; // float-литералы — аналогично
+    std::vector<std::string> strlits; // строковые литералы собираем во время обхода и выдаём в .rodata в конце
+    std::vector<double> flitvals; // флоат литералы
     CodegenError err;
     bool had_error = false;
     std::string new_label() { return ".L" + std::to_string(label_id++); }
@@ -111,7 +110,7 @@ static void define_var(CgenCtx &ctx, const std::string &name, CgVar v) {
     ctx.scopes.back()[name] = v;
 }
 
-// раскрываем именованный тип: структура остаётся TYPE_NAMED, алиас — до своего базового kind
+// раскрываем псевдоним
 static TypeKind resolve_alias(const CgenCtx &ctx, const std::string &name) {
     if (ctx.structs.count(name)) return TYPE_NAMED;
     auto it = ctx.aliases.find(name);
@@ -145,7 +144,7 @@ static int slot_size(const CgenCtx &ctx, TypeKind k, const std::string &sname, T
     return 8;
 }
 
-// нужно при печати и при выборе оператора '+' (конкатенация vs сложение)
+// является ли строкой. нужно для печати
 static bool expr_is_string(const CgenCtx &ctx, const Expr &e) {
     if (e.kind == EXPR_STRING) return true;
     if (e.kind == EXPR_IDENT) {
@@ -159,13 +158,13 @@ static bool expr_is_string(const CgenCtx &ctx, const Expr &e) {
     return false;
 }
 
-// определяем тип выражения без генерации кода — нужно заранее выбрать путь xmm или rax в EXPR_BINARY
+// определяем тип выражения для выбора регистра
 static bool expr_is_float_r(const CgenCtx &ctx, const Expr &e) {
     switch (e.kind) {
     case EXPR_FLOAT:
         return true;
 
-    case EXPR_IDENT: {
+    case EXPR_IDENT: { // разворачиваем псевдоним
         const CgVar *v = find_var(ctx, e.sval);
         if (!v) return false;
         TypeKind k = (v->kind == TYPE_NAMED) ? resolve_alias(ctx, v->sname) : v->kind;
@@ -175,7 +174,7 @@ static bool expr_is_float_r(const CgenCtx &ctx, const Expr &e) {
     case EXPR_CAST:
         return is_float_kind(resolve_kind(ctx, e.cast_type));
 
-    case EXPR_BINARY:
+    case EXPR_BINARY: // для сравнений ложь + неявное расширение (если один флоат, то результат бинарной операции тоже флоат)
         if (e.binop == BINOP_AND || e.binop == BINOP_OR ||
             e.binop == BINOP_EQ || e.binop == BINOP_NEQ ||
             e.binop == BINOP_LT || e.binop == BINOP_GT ||
@@ -183,7 +182,7 @@ static bool expr_is_float_r(const CgenCtx &ctx, const Expr &e) {
         return (e.lhs && expr_is_float_r(ctx, *e.lhs)) ||
                (e.rhs && expr_is_float_r(ctx, *e.rhs));
 
-    case EXPR_UNARY:
+    case EXPR_UNARY: // унарный минус
         return e.unop == UNOP_NEG && e.lhs && expr_is_float_r(ctx, *e.lhs);
 
     case EXPR_FIELD: {
@@ -235,7 +234,7 @@ static int slot_size_of_type(const CgenCtx &ctx, const Type &t) {
     return 8;
 }
 
-// строит CgVar для переменной с явно указанным типом
+// для переменной с явно указанным типом
 static CgVar make_cgvar_from_type(int offset, const Type &t) {
     CgVar v;
     v.offset = offset;
@@ -253,8 +252,7 @@ static CgVar make_cgvar_from_type(int offset, const Type &t) {
 
 static void collect_info(CgenCtx &ctx, const DeclList &decls, const std::string &ns);
 
-// раскладка структур, таблица псевдонимов,
-// мена функций без учета перегрузок нужно знать заранее до генерации кода
+// псевдонимы и имена функций для перегрузок
 static void collect_one(CgenCtx &ctx, const Decl &d, const std::string &ns) {
     std::string full = ns.empty() ? d.name : ns + "__" + d.name;
 
@@ -287,7 +285,7 @@ static void collect_one(CgenCtx &ctx, const Decl &d, const std::string &ns) {
     }
 
     if (d.kind == DECL_TYPE_ALIAS) {
-        // запоминаем только итоговый тип
+        // запоминаем только итоговый, примитивный тип
         TypeKind k = d.alias_type.kind;
         if (k == TYPE_NAMED) {
             auto it = ctx.aliases.find(d.alias_type.name);
@@ -322,7 +320,7 @@ static void collect_one(CgenCtx &ctx, const Decl &d, const std::string &ns) {
         }
 
         info.decl_ptr = &d;
-        // A.2.8: имя уже занято — это перегрузка
+        // если имя занято то функция перегружена
         if (ctx.funcs.count(base_mangled)) {
             int idx = (int)ctx.overloads[base_mangled].size();
             if (idx == 0) {
@@ -346,11 +344,11 @@ static void collect_one(CgenCtx &ctx, const Decl &d, const std::string &ns) {
         return;
     }
 
-    // namespace — просто префикс Name__
+    // для пространств имен ставим Name__
     if (d.kind == DECL_NAMESPACE)
         collect_info(ctx, d.decls, full);
 
-    // A.2.12: impl StructName: — методы собираются как функции StructName::method,
+    // impl StructName: — методы собираются как функции StructName::method,
     // имя метода будет выглядет ькак _cosmos_StructName__method
     if (d.kind == DECL_IMPL)
         collect_info(ctx, d.decls, d.struct_name);
@@ -360,15 +358,14 @@ static void collect_info(CgenCtx &ctx, const DeclList &decls, const std::string 
     for (const auto &d : decls) collect_one(ctx, *d, ns);
 }
 
-// назначаем rbp-смещения всем локальным переменным.
-// делается до генерации кода, чтобы сразу выдать sub rsp, N в прологе
+// всем локальным переменным задаем смещение, считаем смещение стека
 static int compute_frame(const CgenCtx &ctx, const Block &blk, int cur_off, std::map<const Stmt *, int> &offsets) {
     for (const auto &sp : blk) {
         const Stmt &s = *sp;
         if (s.kind == STMT_VAR) {
             int sz = 8;
             if (s.has_type) {
-                sz = slot_size_of_type(ctx, s.var_type);
+                sz = slot_size_of_type(ctx, s.var_type); // для явных типов
             } else if (s.init) {
                 if (s.init->kind == EXPR_ARRAY && !s.init->elems.empty())
                     sz = (int)s.init->elems.size() * 8;
@@ -392,14 +389,13 @@ static int compute_frame(const CgenCtx &ctx, const Block &blk, int cur_off, std:
     return cur_off;
 }
 
-// все локальные слоты лежат ниже rbp
+// доступ к локальным переменным с учетом смещения стека
 static std::string rbp_ref(int offset) {
     if (offset >= 0) return "[rbp+" + std::to_string(offset) + "]";
     return "[rbp" + std::to_string(offset) + "]";
 }
 
-// загружает переменную в rax/xmm0; для массивов и структур кладёт в rax
-// возвращает true если результат в xmm0 (как и cgen_expr)
+// загружает переменную в rax/xmm0, озвращает 1-xmm0 
 static bool emit_load_var(CgenCtx &ctx, const CgVar &v) {
     auto &out = ctx.out;
     TypeKind ek = (v.kind == TYPE_NAMED) ? resolve_alias(ctx, v.sname) : v.kind;
@@ -430,10 +426,10 @@ static void emit_store_var(CgenCtx &ctx, const CgVar &v, bool is_float) {
     }
 }
 
-// возвращает true если результат в xmm0, false если в rax
+// 1 если xmm0
 static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, int> &offsets);
 
-// вычисляет адрес выражения-lvalue в rax 
+// вычисляет адрес выражения в rax 
 static bool cgen_lvalue_addr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, int> &offsets) {
     auto &out = ctx.out;
     if (e.kind == EXPR_IDENT) {
@@ -442,8 +438,7 @@ static bool cgen_lvalue_addr(CgenCtx &ctx, const Expr &e, const std::map<const S
         out << "\tlea rax, " << rbp_ref(v->offset) << "\n";
         return true;
     }
-    if (e.kind == EXPR_INDEX) {
-        // arr[i] -> адрес массива
+    if (e.kind == EXPR_INDEX) { // первый элемент как адрес массива
         cgen_expr(ctx, *e.lhs, offsets);
         out << "\tpush rax\n";
         cgen_expr(ctx, *e.rhs, offsets);
@@ -453,7 +448,7 @@ static bool cgen_lvalue_addr(CgenCtx &ctx, const Expr &e, const std::map<const S
         return true;
     }
     if (e.kind == EXPR_FIELD) {
-        // obj.field адрес obj + смещение поля из StructLayout
+        // obj.field адрес obj и смещение поля из StructLayout
         cgen_expr(ctx, *e.lhs, offsets);
         std::string sname;
         if (e.lhs->kind == EXPR_IDENT) {
@@ -477,7 +472,7 @@ static bool cgen_lvalue_addr(CgenCtx &ctx, const Expr &e, const std::map<const S
     return false;
 }
 
-// A.2.12: имя структуры, к которой относится выражение нужно чтобы найти метод
+// имя структуры выражения для поиска метода или поля
 static std::string expr_struct_name(const CgenCtx &ctx, const Expr &e) {
     if (e.kind == EXPR_IDENT) {
         const CgVar *v = find_var(ctx, e.sval);
@@ -491,12 +486,13 @@ static std::string expr_struct_name(const CgenCtx &ctx, const Expr &e) {
     return "";
 }
 
+// 1 если результат из хmm0
 static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, int> &offsets) {
     if (ctx.had_error) return false;
     auto &out = ctx.out;
     int lid = ctx.label_id;
 
-    switch (e.kind) {
+    switch (e.kind) { // смотрим тип
 
     case EXPR_INT:
         out << "\tmov rax, " << e.ival << "\n";
@@ -515,7 +511,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
         return false;
 
     case EXPR_STRING: {
-        // как и с float-литералами — сама строка уходит в .rodata, здесь только адрес
+        // строка в роадата, передаем адрес
         int idx = (int)ctx.strlits.size();
         ctx.strlits.push_back(e.sval);
         out << "\tlea rax, _str_" << idx << "[rip]\n";
@@ -535,7 +531,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
         ctx.label_id++;
         int id = lid;
 
-        // && и || — короткое замыкание: rhs не вычисляется, если результат уже ясен по lhs
+        // короткое замыкание - rhs не вычисляется если результат уже ясен по lhs
         if (e.binop == BINOP_AND) {
             std::string lfalse = ".Land_f" + std::to_string(id);
             std::string lend = ".Land_e" + std::to_string(id);
@@ -608,7 +604,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
                 out << "\timul rax, rcx\n";
                 break;
             case BINOP_DIV:
-                // деление на ноль- проверяем сами и зовём panic с понятным сообщением
+                // деление на ноль
                 out << "\ttest rcx, rcx\n";
                 out << "\tjnz .Ddiv_ok" << id << "\n";
                 out << "\tlea rdi, _err_divzero[rip]\n";
@@ -622,7 +618,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
                 out << "\tlea rdi, _err_divzero[rip]\n";
                 out << "\tcall _cosmos_panic\n";
                 out << ".Dmod_ok" << id << ":\n";
-                out << "\tcqo\n\tidiv rcx\n\tmov rax, rdx\n"; // остаток от деления — в rdx
+                out << "\tcqo\n\tidiv rcx\n\tmov rax, rdx\n"; // остаток от деления в rdx
                 break;
             case BINOP_EQ:
                 out << "\tcmp rax, rcx\n\tsete al\n\tmovzx rax, al\n";
@@ -647,7 +643,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
             }
             return false;
         } else {
-            // lhs сохраняем на стек — иначе rhs перезапишет xmm0
+            // lhs сохраняем на стекиначе rhs перезапишет xmm0
             bool lf = cgen_expr(ctx, *e.lhs, offsets);
             if (!lf) out << "\tcvtsi2sd xmm0, rax\n";
             out << "\tsub rsp, 8\n\tmovsd [rsp], xmm0\n";
@@ -749,7 +745,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
             out << "\tmovsd xmm0, [rcx]\n";
             return true;
         }
-        // элемент-структура — у него нет единого значения, оставляем в rax его адрес
+        // оставляем адрес структуры в rax
         if (elem_k == TYPE_NAMED && ctx.structs.count(arr_name)) {
             out << "\tmov rax, rcx\n";
             return false;
@@ -759,7 +755,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
     }
 
     case EXPR_FIELD: {
-        // lhs даёт адрес объекта в rax, дальше просто + смещение
+        // lhs даёт адрес объекта в rax, дальше просто учитываем смещение
         std::string sname = expr_struct_name(ctx, *e.lhs);
         cgen_expr(ctx, *e.lhs, offsets);
 
@@ -771,7 +767,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
         for (const auto &f : sit->second.fields) {
             if (f.name == e.sval) {
                 if (f.offset) out << "\tadd rax, " << f.offset << "\n";
-                // поле-структура: в rax остаётся адрес, не значение
+                // если поле тоже структура то в rax остаётся адрес, не значение
                 if (f.kind == TYPE_NAMED && ctx.structs.count(f.sname)) {
                     return false;
                 }
@@ -787,12 +783,12 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
         return false;
     }
 
-    case EXPR_SCOPE:
+    case EXPR_SCOPE: // не должно встречаться самостоятельно
         cg_fail(ctx, "scope expression outside of call", e.line, e.col);
         return false;
 
     case EXPR_CALL: {
-        std::string mangled;
+        std::string mangled; // для перегрузок
         bool is_builtin = false;
         bool is_method = false;
         const Expr *self_expr = nullptr;
@@ -807,10 +803,10 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
             }
         } else if (e.lhs->kind == EXPR_SCOPE &&
                    e.lhs->lhs && e.lhs->lhs->kind == EXPR_IDENT) {
-            // A.2.12: Struct::method(self, ...) — явный вызов метода, self передан как обычный аргумент
+            // Struct::method(self, ...) — явный вызов метода, self передан как обычный аргумент
             mangled = "_cosmos_" + e.lhs->lhs->sval + "__" + e.lhs->sval;
         } else if (e.lhs->kind == EXPR_FIELD && e.lhs->lhs) {
-            // A.2.12: obj.method(args) — превращаем в вызов Struct::method(obj, args),
+            // obj.method(args) — превращаем в вызов Struct::method(obj, args),
             // obj становится неявным self (self_expr), его сгенерируем первым аргументом ниже
             std::string struct_name = expr_struct_name(ctx, *e.lhs->lhs);
             if (!struct_name.empty()) {
@@ -830,9 +826,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
             return false;
         }
 
-        // A.2.8 / A.3.1: имя — это набор перегрузок, ищем версию с совпадающими по
-        // float/int параметрами (semantic.cpp уже проверил совместимость с учётом can_widen,
-        // здесь достаточно различать только xmm vs обычный регистр — base пропускает self у методов)
+        // ищем перегрузки по rax/xmm (количество было учтено в семантике)
         if (!is_builtin && ctx.overloads.count(mangled)) {
             const auto &versions = ctx.overloads.at(mangled);
             for (const auto &vname : versions) {
@@ -850,7 +844,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
             }
         }
 
-        // встроенные функции — не настоящие вызовы, разворачиваются прямо в код/runtime-хелперы
+        // встроенные функции не настоящие вызовы, разворачиваются прямо в код/runtime-хелперы
         if (is_builtin) {
             const std::string &bname = e.lhs->sval;
 
@@ -906,7 +900,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
                 return false;
             }
 
-            // print (целое/float/bool/строка/массив) определяем статически здесь же,
+            // print (целое/float/bool/строка/массив) определяем статически здесь же
             if (bname == "print") {
                 if (e.args.empty()) { out << "\tcall _cosmos_print_nl\n"; return false; }
                 const Expr &arg = *e.args[0];
@@ -961,7 +955,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
                     }
                 }
 
-                // печать массива — вручную идём по элементам и оборачиваем в [a, b, c]
+                // для печати массива вручную идём по элементам и оборачиваем в [a, b, c]
                 if (arg_arr) {
                     const CgVar *v = (arg.kind == EXPR_IDENT) ? find_var(ctx, arg.sval) : nullptr;
                     if (v) {
@@ -1039,7 +1033,7 @@ static bool cgen_expr(CgenCtx &ctx, const Expr &e, const std::map<const Stmt *, 
             return false;
         }
         const FuncInfo &fi = fit->second;
-        // A.2.12: self (если есть) — невидимый нулевой аргумент перед явными e.args
+        // self (если есть) — невидимый нулевой аргумент перед явными e.args
         int self_count = is_method ? 1 : 0;
         int nargs = (int)e.args.size() + self_count;
 
@@ -1125,14 +1119,13 @@ static bool cgen_stmt(CgenCtx &ctx, const Stmt &s, const std::map<const Stmt *, 
         v.elem_kind = TYPE_INT64;
         v.array_n = 0;
 
-        if (s.has_type) {
+        if (s.has_type) { // явный тип
             v = make_cgvar_from_type(off, s.var_type);
             if (v.kind == TYPE_NAMED && !ctx.structs.count(v.sname)) {
                 TypeKind rk = resolve_alias(ctx, v.sname);
                 v.kind = rk;
             }
-        } else if (s.init) {
-            // A.1.7: тип не указан (let x = ...) — определяем CgVar по виду инициализатора,
+        } else if (s.init) { // тип не указан (let x = ...) то определяем по инициализатору
             const Expr &ie = *s.init;
             if (ie.kind == EXPR_INT) { v.kind = TYPE_INT64; }
             else if (ie.kind == EXPR_FLOAT) { v.kind = TYPE_FLOAT64; }
@@ -1159,8 +1152,8 @@ static bool cgen_stmt(CgenCtx &ctx, const Stmt &s, const std::map<const Stmt *, 
                     v.array_n = src->array_n;
                 } else v.kind = TYPE_INT64;
             } else if (ie.kind == EXPR_CALL) {
-                // let x = f(...) / obj.method(...) — тип x берём из возвращаемого типа функции;
-                // последняя ветка (EXPR_FIELD) — A.2.12, тот же способ найти Struct::method, что в cgen_expr
+                // obj.method(...) — тип x берём из возвращаемого типа функции
+                // последняя ветка (EXPR_FIELD) — тот же способ найти Struct::method, что в cgen_expr
                 std::string mn;
                 if (ie.lhs && ie.lhs->kind == EXPR_IDENT) {
                     if (ie.lhs->sval == "input") { v.kind = TYPE_STRING; break; }
@@ -1207,7 +1200,6 @@ static bool cgen_stmt(CgenCtx &ctx, const Stmt &s, const std::map<const Stmt *, 
         }
 
         // StructName{field: val, ...} поля кладём по смещениям из StructLayout,
-        // порядок в литерале может не совпадать с порядком объявления
         if (init.kind == EXPR_STRUCT) {
             auto sit = ctx.structs.find(init.sval);
             if (sit == ctx.structs.end()) {
@@ -1230,8 +1222,7 @@ static bool cgen_stmt(CgenCtx &ctx, const Stmt &s, const std::map<const Stmt *, 
             return !ctx.had_error;
         }
 
-        // инициализатор — другая переменная/выражение того же агрегатного типа
-        // cgen_expr вернёт адрес (emit_load_var для структур/массивов), копируем целиком
+        // инициализатор — другая переменная, cgen_expr вернёт адрес
         if ((v.kind == TYPE_NAMED && ctx.structs.count(v.sname)) || v.kind == TYPE_ARRAY) {
             int sz = slot_size(ctx, v.kind, v.sname, v.elem_kind, v.array_n);
             cgen_expr(ctx, init, offsets);
@@ -1251,7 +1242,7 @@ static bool cgen_stmt(CgenCtx &ctx, const Stmt &s, const std::map<const Stmt *, 
         const Expr &tgt = *s.target;
         const Expr &val = *s.val;
 
-        // сперва выясняем тип цели (float/агрегат/обычное число) -- от этого зависит, нужен ли memcpy и куда положить результат val (xmm0 или rax)
+        // сперва выясняем тип цели и смотрим куда положить результат
         bool tgt_float = false;
         bool tgt_agg = false;
         std::string tgt_sname;
@@ -1320,7 +1311,7 @@ static bool cgen_stmt(CgenCtx &ctx, const Stmt &s, const std::map<const Stmt *, 
     }
 
     case STMT_IF: {
-        // push/pop_scope - переменные, объявленные внутри if/else, не видны после блока
+        // push/pop_scope: переменные, объявленные внутри if/else, не видны после блока
         std::string lelse = ".Lelse_" + std::to_string(ctx.label_id);
         std::string lend = ".Lfi_" + std::to_string(ctx.label_id++);
         cgen_expr(ctx, *s.cond, offsets);
@@ -1342,8 +1333,7 @@ static bool cgen_stmt(CgenCtx &ctx, const Stmt &s, const std::map<const Stmt *, 
     }
 
     case STMT_WHILE: {
-        // метки текущего цикла кладём в break/cont_stack -- так break/continue
-        // во вложенном цикле находят именно свои метки, а не внешнего цикла
+        // метки текущего цикла кладём в стек для break/continue
         std::string lcond = ".Lwcond_" + std::to_string(ctx.label_id);
         std::string lend = ".Lwend_" + std::to_string(ctx.label_id++);
         ctx.break_stack.push_back(lend);
@@ -1363,7 +1353,7 @@ static bool cgen_stmt(CgenCtx &ctx, const Stmt &s, const std::map<const Stmt *, 
 
     case STMT_RETURN:
         if (s.ret_val) cgen_expr(ctx, *s.ret_val, offsets);
-        out << "\tjmp " << ctx.ret_label << "\n"; // прыгаем в epilogue — один ret на всю функцию
+        out << "\tjmp " << ctx.ret_label << "\n"; // один ret на всю функцию
         return !ctx.had_error;
 
     case STMT_BREAK:
@@ -1396,7 +1386,7 @@ static bool cgen_block(CgenCtx &ctx, const Block &blk, const std::map<const Stmt
 
 static bool cgen_func(CgenCtx &ctx, const Decl &d, const std::string &ns) {
     auto &out = ctx.out;
-    // A.2.8: decl_mangled хранит уже посчитанное имя с учётом перегрузок
+    // decl_mangled хранит уже посчитанное имя с учётом перегрузок
     std::string mangled;
     auto dm = ctx.decl_mangled.find(&d);
     if (dm != ctx.decl_mangled.end()) {
@@ -1406,7 +1396,7 @@ static bool cgen_func(CgenCtx &ctx, const Decl &d, const std::string &ns) {
         mangled = (ns.empty() && d.name == "main") ? "main" : "_cosmos_" + full;
     }
 
-    // каждому параметру свой слот ниже rbp; структуры/массивы передаются по указателю (is_ptr)
+    // каждому параметру свой слот ниже rbp, структуры и массивы передаются по указателю (is_ptr)
     int param_off = 0;
     std::vector<std::pair<std::string, CgVar>> params;
     int ii = 0, fi = 0;
@@ -1436,7 +1426,7 @@ static bool cgen_func(CgenCtx &ctx, const Decl &d, const std::string &ns) {
     if (frame_size > 0)
         out << "\tsub rsp, " << frame_size << "\n";
 
-    // переносим параметры из входных регистров в их слоты на стеке — дальше с ними работаем как с обычными локальными переменными
+    // переносим параметры из входных регистров в их слоты на стеке и работаем как с обычными локальными переменными
     ii = fi = 0;
     static const char *INT_REGS[] = {"rdi","rsi","rdx","rcx","r8","r9"};
     for (const auto &[pname, pv] : params) {
@@ -1476,7 +1466,7 @@ static bool cgen_decl(CgenCtx &ctx, const Decl &d, const std::string &ns) {
         std::string new_ns = ns.empty() ? d.name : ns + "__" + d.name;
         return cgen_decls(ctx, d.decls, new_ns);
     }
-    // A.2.12: тело каждого метода генерируется как обычная функция
+    // тело каждого метода генерируется как обычная функция
     // с именем _cosmos_StructName__method (self уже есть среди d.params)
     if (d.kind == DECL_IMPL)
         return cgen_decls(ctx, d.decls, d.struct_name);
@@ -1511,7 +1501,7 @@ static void emit_preamble(std::ostream &out) {
 
     out << ".text\n\n";
 
-    // panic(msg) -- пишет "panic: <msg>\n" в stderr (fd 2) сырыми write-сисколами и завершает
+    // panic(msg) - пишет "panic: <msg>\n" в stderr (fd 2) сырыми write-сисколами и завершает
     // процесс через exit(1) (syscall 60); printf не используем, чтобы не зависеть от его буфера
     out << "_cosmos_panic:\n";
     out << "\tpush rbp\n\tmov rbp, rsp\n";
@@ -1557,8 +1547,8 @@ static void emit_preamble(std::ostream &out) {
     out << "\tmov rax, r12\n";
     out << "\tmov rsp, rbp\n\tpop rbp\n\tret\n\n";
 
-    // input() -- читает строку из stdin в буфер на стеке (4096 байт), срезает
-    // завершающий '\n' если он есть, копирует результат в malloc'нутую строку
+    // input() читает строку из stdin в буфер на стеке (4096 байт), срезает
+    // завершающий '\n' если он есть, копирует результат в строку
     out << "_cosmos_input:\n";
     out << "\tpush rbp\n\tmov rbp, rsp\n\tsub rsp, 4112\n";
     out << "\tlea rdi, [rbp-4112]\n";

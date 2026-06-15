@@ -302,7 +302,7 @@ static bool is_builtin(const std::string &n) {
     return n == "print" || n == "input" || n == "exit" || n == "panic" || n == "len";
 }
 
-static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
+static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) { // вычисляет типы выражений
     switch (e->kind) {
 
     case EXPR_INT:
@@ -318,12 +318,12 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
         set_primitive(out, TYPE_STRING);
         return true;
 
-    case EXPR_IDENT: {
-        if (is_builtin(e->sval)) { 
+    case EXPR_IDENT: { // идентификаторы
+        if (is_builtin(e->sval)) { // встроенная функция
             set_primitive(out, TYPE_VOID); 
             return true; 
         }
-        SymInfo *sym = lookup(ctx, e->sval);
+        SymInfo *sym = lookup(ctx, e->sval); // поиск в таблице символов
         if (!sym) {
             fail(ctx, "undefined identifier '" + e->sval + "'", e->line, e->col); return false;
         }
@@ -334,7 +334,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
         return true;
     }
 
-    case EXPR_BINARY: {
+    case EXPR_BINARY: { // рекурсивно идет по дереву
         Type lt, rt;
         if (!check_expr(ctx, e->lhs.get(), &lt)) return false;
         if (!check_expr(ctx, e->rhs.get(), &rt)) return false;
@@ -381,7 +381,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
             }
         }
 
-        TypeKind common = common_numeric(rlt->kind, rrt->kind);
+        TypeKind common = common_numeric(rlt->kind, rrt->kind); // числовой тип
 
         switch (e->binop) {
         case BINOP_ADD: case BINOP_SUB: case BINOP_MUL: case BINOP_DIV: case BINOP_MOD:
@@ -407,7 +407,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
         return false;
     }
 
-    case EXPR_UNARY: {
+    case EXPR_UNARY: { // для унарных
         Type ot;
         if (!check_expr(ctx, e->lhs.get(), &ot)) return false;
         if (e->unop == UNOP_NOT) {
@@ -426,7 +426,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
         return true;
     }
 
-    case EXPR_CAST: {
+    case EXPR_CAST: { // преобразования
         Type ot;
         if (!check_expr(ctx, e->lhs.get(), &ot)) return false;
         const Type *src = resolve(ctx, ot);
@@ -441,7 +441,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
         return true;
     }
 
-    // A.1.13: sizeof(type) -- известен на этапе компиляции, сворачиваем в EXPR_INT.
+    // A.1.13: sizeof(type) известен на этапе компиляции, сворачиваем в EXPR_INT
     case EXPR_SIZEOF: {
         auto sz = type_size(ctx, e->cast_type);
         if (!sz) {
@@ -455,7 +455,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
         return true;
     }
 
-    // A.1.13: typeof(expr) -- имя статического типа как строковый литерал;
+    // A.1.13: typeof(expr) имя статического типа как строковый литерал
     case EXPR_TYPEOF: {
         Type lt;
         if (!check_expr(ctx, e->lhs.get(), &lt)) return false;
@@ -482,9 +482,9 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
         return true;
     }
 
-    case EXPR_FIELD: {
+    case EXPR_FIELD: { // поле структуры
         Type base_t;
-        if (!check_expr(ctx, e->lhs.get(), &base_t)) return false;
+        if (!check_expr(ctx, e->lhs.get(), &base_t)) return false; // идем налево
         const Type *rb = resolve(ctx, base_t);
         if (rb->kind != TYPE_NAMED) {
             fail(ctx, "field access on non-struct type " + type_str(base_t), e->line, e->col);
@@ -507,14 +507,14 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
     }
 
     case EXPR_CALL: {
-        if (e->lhs->kind == EXPR_IDENT && is_builtin(e->lhs->sval))
+        if (e->lhs->kind == EXPR_IDENT && is_builtin(e->lhs->sval)) // для встроенных функций
             return check_builtin_call(ctx, e->lhs->sval, e->args, e->line, e->col, out);
 
-        std::string fname;
+        std::string fname; // полное имя функции
         std::vector<Type> extra_args;
 
         if (e->lhs->kind == EXPR_IDENT) {
-            fname = e->lhs->sval;
+            fname = e->lhs->sval; // имя как есть если идентификатор
         } else if (e->lhs->kind == EXPR_SCOPE && e->lhs->lhs->kind == EXPR_IDENT) {
             fname = e->lhs->lhs->sval + "::" + e->lhs->sval;
         } else if (e->lhs->kind == EXPR_FIELD) {
@@ -527,7 +527,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
                 if (msym && msym->kind == SYM_FUNC) {
                     fname = method_name;
                     extra_args.push_back(copy_type(base_t)); // self передаётся первым аргументом
-                    goto found_fname;
+                    goto found_fname; // имя уже найденр
                 }
             }
             fail(ctx, "invalid call expression", e->line, e->col); return false;
@@ -541,10 +541,9 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
             fail(ctx, "undefined function '" + fname + "'", e->line, e->col); return false;
         }
 
-        // A.2.8 / A.3.1: у имени несколько версий — ищем первую, чьи параметры подходят
-        // под типы аргументов (точное совпадение или неявное расширение, см. can_widen)
+        // рассматриваем перегрузки функций
         if (sym->kind == SYM_OVERLOADED) {
-            auto &versions = ctx->overloads[fname];
+            auto &versions = ctx->overloads[fname]; // ищем нужную функцию
             std::vector<Type> arg_types;
             for (auto &a : extra_args) arg_types.push_back(copy_type(a));
             for (const auto &ea : e->args) {
@@ -561,7 +560,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
                     const Type &pt = (*vsym->params)[i].type;
                     const Type &at = arg_types[i];
                     if (!types_equal(ctx, pt, at)) {
-                        // A.3.1: точные типы не совпали — допускаем неявное расширение аргумента
+                        // точные типы не совпали — допускаем неявное расширение аргумента
                         const Type *rp = resolve(ctx, pt), *ra = resolve(ctx, at);
                         if (!is_numeric(*rp) || !is_numeric(*ra) || !can_widen(ra->kind, rp->kind))
                             { ok = false; break; }
@@ -573,6 +572,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
             return false;
         }
 
+        // для неперегруженной функции
         if (sym->kind != SYM_FUNC) {
             fail(ctx, "'" + fname + "' is not a function", e->line, e->col); return false;
         }
@@ -614,7 +614,7 @@ static bool check_expr(SemCtx *ctx, const Expr *e, Type *out) {
         return true;
     }
 
-    case EXPR_ARRAY: {
+    case EXPR_ARRAY: { // массив = смотрим по первому элементу
         if (e->elems.empty()) {
             fail(ctx, "cannot infer type of empty array literal", e->line, e->col); return false;
         }
@@ -698,14 +698,14 @@ static bool is_assignable(SemCtx *ctx, const Expr *e) {
 static bool check_stmt(SemCtx *ctx, const Stmt *s) {
     switch (s->kind) {
 
-    case STMT_VAR: {
+    case STMT_VAR: { // вычисляем тип инициализатора
         Type init_t;
         if (!check_expr(ctx, s->init.get(), &init_t)) return false;
 
         if (s->has_type && !types_equal(ctx, s->var_type, init_t)) {
             const Type *rv = resolve(ctx, s->var_type);
             const Type *ri = resolve(ctx, init_t);
-            if (!is_numeric(*rv) || !is_numeric(*ri) || !can_widen(ri->kind, rv->kind)) {
+            if (!is_numeric(*rv) || !is_numeric(*ri) || !can_widen(ri->kind, rv->kind)) { // допускается расширение если тип был указан явно но не совпал с init_t
                 fail(ctx, "'" + s->var_name + "': declared as " + type_str(s->var_type)
                      + " but initialized with " + type_str(init_t), s->line, s->col);
                 return false;
@@ -723,7 +723,7 @@ static bool check_stmt(SemCtx *ctx, const Stmt *s) {
         sym.fields = nullptr;
         sym.type = s->has_type ? &s->var_type : nullptr;
         if (!define(ctx, s->var_name, std::move(sym), s->line, s->col)) return false;
-        // A.1.7: тип не указан явно (let x = 42) — берём тип из инициализатора.
+        // если тип не указан явно то берём тип из инициализатора.
         if (!s->has_type) {
             ctx->scopes.back()[s->var_name].type = new Type(copy_type(init_t));
         }
@@ -751,7 +751,7 @@ static bool check_stmt(SemCtx *ctx, const Stmt *s) {
     case STMT_IF: {
         Type cond_t;
         if (!check_expr(ctx, s->cond.get(), &cond_t)) return false;
-        Type bool_t; set_primitive(&bool_t, TYPE_BOOL);
+        Type bool_t; set_primitive(&bool_t, TYPE_BOOL); // условие должно быть булевым
         if (!types_equal(ctx, cond_t, bool_t)) {
             fail(ctx, "if condition must be bool, got " + type_str(cond_t), s->line, s->col);
             return false;
@@ -785,7 +785,7 @@ static bool check_stmt(SemCtx *ctx, const Stmt *s) {
         return ok;
     }
 
-    case STMT_RETURN: {
+    case STMT_RETURN: { // рассматриваем случаи для возвращение без и с значением
         if (!s->ret_val) {
             if (ctx->ret_type->kind != TYPE_VOID) {
                 fail(ctx, "non-void function must return a value", s->line, s->col); return false;
@@ -802,7 +802,7 @@ static bool check_stmt(SemCtx *ctx, const Stmt *s) {
         return true;
     }
 
-    case STMT_BREAK: case STMT_CONTINUE:
+    case STMT_BREAK: case STMT_CONTINUE: // должны быть внутри цикла
         if (!ctx->in_loop) {
             fail(ctx, s->kind == STMT_BREAK ? "break outside loop" : "continue outside loop",
                  s->line, s->col);
@@ -837,19 +837,20 @@ static bool collect_decls(SemCtx *ctx, const DeclList &decls, const std::string 
 }
 
 static bool collect_decl(SemCtx *ctx, const Decl *d, const std::string &ns_prefix) {
+    // сначала первый проход - все объявления верхнего уровня
     std::string full_name = ns_prefix.empty() ? d->name : ns_prefix + "::" + d->name;
 
     switch (d->kind) {
-    case DECL_FUNC: {
-        SymInfo sym;
+    case DECL_FUNC: { 
+        SymInfo sym; // создаем информацию о символе
         sym.kind = SYM_FUNC;
         sym.is_mut = false;
         sym.type = &d->ret_type;
         sym.params = &d->params;
         sym.fields = nullptr;
         SymInfo *existing = lookup(ctx, full_name);
-        if (existing && (existing->kind == SYM_FUNC || existing->kind == SYM_OVERLOADED)) {
-            // A.2.8: вторая функция с тем же именем — превращаем в перегрузку.
+        if (existing && (existing->kind == SYM_FUNC || existing->kind == SYM_OVERLOADED)) { 
+            // вторая функция с тем же именем — превращаем в перегрузку.
             int idx = ctx->overload_count[full_name]++;
             std::string versioned = full_name + "$" + std::to_string(idx);
             if (idx == 0) {
@@ -863,7 +864,7 @@ static bool collect_decl(SemCtx *ctx, const Decl *d, const std::string &ns_prefi
         }
         return define(ctx, full_name, std::move(sym), d->line, d->col);
     }
-    case DECL_STRUCT: {
+    case DECL_STRUCT: { // структуры и поля
         SymInfo sym;
         sym.kind = SYM_STRUCT;
         sym.is_mut = false;
