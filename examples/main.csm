@@ -1,0 +1,138 @@
+# Обзор синтаксиса и семантики Cosmos: простые примеры каждой конструкции.
+# Запуск: ./compiler examples/main.csm -o main.s && gcc main.s -o main -no-pie && ./main
+
+# --- псевдоним типа ---
+type Meters = int32
+
+# --- структура ---
+struct Point:
+    x: int32
+    y: int32
+
+# --- методы структуры (impl, доп. A.2.12) ---
+impl Point:
+    def length2(self: Point) -> int32:
+        return self.x * self.x + self.y * self.y
+
+    def sum(self: Point) -> int32:
+        return self.x + self.y
+
+# --- namespace, доступ через :: ---
+namespace mathx:
+    def square(n: int32) -> int32:
+        return n * n
+
+# --- рекурсия ---
+def factorial(n: int32) -> int32:
+    if n <= 1:
+        return 1
+    return n * factorial(n - 1)
+
+# --- перегрузка функций по типу параметра (доп. A.2.8 / A.3.1) ---
+def double(x: int32) -> int32:
+    return x * 2
+
+def double(x: float64) -> float64:
+    return x * 2.0
+
+# --- функция без возвращаемого значения ---
+def greet(name: string) -> void:
+    print("Hello, " + name + "!")
+
+def main() -> int32:
+    # let — неизменяемая переменная, var — можно менять
+    let a: int32 = 10
+    var b = 20            # тип выводится из инициализатора (доп. A.1.7)
+    b = b + a
+    print(b)              # 30
+
+    # арифметика, сравнения, логика
+    print(a + 1)              # 11
+    print(a * 2 - 5)          # 15
+    print(a == 10 and b > 0)  # true
+    print(not (a > 100))      # true
+
+    # неявное расширение int -> float в смешанном выражении (доп. A.1.8)
+    let f: float64 = a + 0.5
+    print(f)              # 10.5
+
+    # явное приведение типов через as
+    let big: int64 = a as int64
+    let truncated: int32 = f as int32
+    print(big)            # 10
+    print(truncated)      # 10
+
+    # целочисленные типы разных размеров и знаков (сужение -- только через as)
+    let i8: int8 = -5 as int8
+    let u8: uint8 = 250 as uint8
+    let i64: int64 = 9000000000
+    print(i8)             # -5
+    print(u8)             # 250
+    print(i64)            # 9000000000
+
+    # bool
+    let flag: bool = true
+    print(flag)           # true
+
+    # if/else
+    if a > 5:
+        print("a > 5")
+    else:
+        print("a <= 5")
+
+    # while, break, continue
+    var i: int32 = 0
+    var sum: int32 = 0
+    while i < 10:
+        i = i + 1
+        if i > 5:
+            break
+        if i == 3:
+            continue
+        sum = sum + i
+    print(sum)            # 1+2+4+5 = 12
+
+    # массивы фиксированного размера
+    let nums: array[int32, 5] = [10, 20, 30, 40, 50]
+    print(nums[2])        # 30
+    print(len(nums))      # 5
+    print(nums)           # [10, 20, 30, 40, 50] (каждый элемент на своей строке)
+
+    # строки: конкатенация, сравнение, длина
+    let s1: string = "Hello"
+    let s2: string = "World"
+    print(s1 + ", " + s2 + "!")  # Hello, World!
+    print(len(s1))               # 5
+    print(s1 == "Hello")         # true
+
+    # структуры: создание, доступ к полям, методы (impl)
+    var p: Point = Point{x: 3, y: 4}
+    print(p.x)            # 3
+    print(p.y)            # 4
+    print(p.length2())    # 25
+    print(p.sum())        # 7
+
+    # namespace
+    print(mathx::square(6))  # 36
+
+    # рекурсия
+    print(factorial(5))   # 120
+
+    # перегрузка функций
+    print(double(21))     # 42
+    print(double(2.5))    # 5
+
+    # псевдоним типа — Meters и int32 полностью взаимозаменяемы
+    let dist: Meters = 100
+    print(dist)           # 100
+
+    # sizeof / typeof — вычисляются на этапе компиляции (доп. A.1.13)
+    print(sizeof(int64))             # 8
+    print(sizeof(array[int32, 5]))   # 20 (5 * sizeof(int32))
+    print(typeof(1 + 1))     # int32
+    print(typeof(f))         # float64
+
+    # функция без результата
+    greet("Cosmos")
+
+    return 0
