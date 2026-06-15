@@ -25,6 +25,7 @@ static const KwEntry KEYWORDS[KEYWORDS_COUNT] = {
     {"float32", KW_FLOAT32},
     {"float64", KW_FLOAT64},
     {"if", KW_IF},
+    {"impl", KW_IMPL},
     {"input", KW_INPUT},
     {"int16", KW_INT16},
     {"int32", KW_INT32},
@@ -38,10 +39,12 @@ static const KwEntry KEYWORDS[KEYWORDS_COUNT] = {
     {"panic", KW_PANIC},
     {"print", KW_PRINT},
     {"return", KW_RETURN},
+    {"sizeof", KW_SIZEOF},
     {"string", KW_STRING},
     {"struct", KW_STRUCT},
     {"true", KW_TRUE},
     {"type", KW_TYPE},
+    {"typeof", KW_TYPEOF},
     {"uint16", KW_UINT16},
     {"uint32", KW_UINT32},
     {"uint64", KW_UINT64},
@@ -191,7 +194,77 @@ static Token scan_op(const char *src, int *i, int line, int col) {
     return e;
 }
 
+// Заменяет блочные комментарии /* ... */ (с поддержкой вложенности) пробелами
+// и переводами строк той же длины, чтобы позиции токенов после комментария не сдвигались.
+// Строковые литералы и однострочные # -комментарии копируются как есть, без обработки.
+static std::string strip_block_comments(const char *src, LexError *err) {
+    std::string out;
+    int line = 1, col = 1;
+    int i = 0;
+    while (src[i]) {
+        char c = src[i];
+        if (c == '"') {
+            out += c;
+            i++; col++;
+            while (src[i] && src[i] != '"') {
+                if (src[i] == '\\' && src[i + 1]) {
+                    out += src[i]; out += src[i + 1];
+                    i += 2; col += 2;
+                    continue;
+                }
+                out += src[i];
+                i++; col++;
+            }
+            if (src[i] == '"') { out += src[i]; i++; col++; }
+            continue;
+        }
+        if (c == '#') {
+            while (src[i] && src[i] != '\n') { out += src[i]; i++; col++; }
+            continue;
+        }
+        if (c == '/' && src[i + 1] == '*') {
+            int start_line = line, start_col = col;
+            int depth = 1;
+            out += "  ";
+            i += 2; col += 2;
+            while (depth > 0) {
+                if (!src[i]) {
+                    err->message = "unterminated block comment";
+                    err->line = start_line;
+                    err->col = start_col;
+                    return std::string();
+                }
+                if (src[i] == '/' && src[i + 1] == '*') {
+                    depth++;
+                    out += "  ";
+                    i += 2; col += 2;
+                } else if (src[i] == '*' && src[i + 1] == '/') {
+                    depth--;
+                    out += "  ";
+                    i += 2; col += 2;
+                } else if (src[i] == '\n') {
+                    out += '\n';
+                    i++; line++; col = 1;
+                } else {
+                    out += ' ';
+                    i++; col++;
+                }
+            }
+            continue;
+        }
+        out += c;
+        if (c == '\n') { line++; col = 1; } else col++;
+        i++;
+    }
+    return out;
+}
+
 std::vector<Token> *tokenize(const char *src, LexError *err) {
+    std::string stripped = strip_block_comments(src, err);
+    if (!err->message.empty())
+        return nullptr;
+    src = stripped.c_str();
+
     auto *tokens = new std::vector<Token>();
     std::stack<int> indent_stack; // считаем отступы
     indent_stack.push(0);

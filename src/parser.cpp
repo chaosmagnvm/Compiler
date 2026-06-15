@@ -444,6 +444,28 @@ static ExprPtr parse_primary_expr(Parser *p) {
         return e;
     }
 
+    // A.1.13: sizeof(type) -- размер типа в байтах, вычисляется на этапе компиляции
+    if (check_kw(p, KW_SIZEOF)) {
+        advance(p);
+        if (!expect_op(p, OP_LPAREN, "(")) return nullptr;
+        auto e = make_expr(EXPR_SIZEOF, line, col);
+        if (!parse_type(p, &e->cast_type)) return nullptr;
+        if (!expect_op(p, OP_RPAREN, ")")) return nullptr;
+        return e;
+    }
+
+    // A.1.13: typeof(expr) -- имя статического типа выражения как строка;
+    // само выражение не вычисляется (как sizeof/decltype)
+    if (check_kw(p, KW_TYPEOF)) {
+        advance(p);
+        if (!expect_op(p, OP_LPAREN, "(")) return nullptr;
+        auto e = make_expr(EXPR_TYPEOF, line, col);
+        e->lhs = parse_expr(p);
+        if (!e->lhs) return nullptr;
+        if (!expect_op(p, OP_RPAREN, ")")) return nullptr;
+        return e;
+    }
+
     if (check(p, TOKEN_IDENT)) {
         std::string name = advance(p).lexeme;
 
@@ -809,6 +831,14 @@ static void dump_expr(const Expr &e, std::ostream &out) {
         dump_expr(*e.lhs, out);
         out << " as " << type_str(e.cast_type) << ")";
         break;
+    case EXPR_SIZEOF:
+        out << "sizeof(" << type_str(e.cast_type) << ")";
+        break;
+    case EXPR_TYPEOF:
+        out << "typeof(";
+        dump_expr(*e.lhs, out);
+        out << ")";
+        break;
     case EXPR_INDEX:
         dump_expr(*e.lhs, out);
         out << "[";
@@ -994,6 +1024,13 @@ static void tree_expr(const Expr &e, std::ostream &out, const std::string &pfx, 
         break;
     case EXPR_CAST:
         tree_node(out, pfx, last, "Cast -> " + type_str(e.cast_type), &cp);
+        tree_expr(*e.lhs, out, cp, true);
+        break;
+    case EXPR_SIZEOF:
+        tree_node(out, pfx, last, "Sizeof " + type_str(e.cast_type), nullptr);
+        break;
+    case EXPR_TYPEOF:
+        tree_node(out, pfx, last, "Typeof", &cp);
         tree_expr(*e.lhs, out, cp, true);
         break;
     case EXPR_INDEX:

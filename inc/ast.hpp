@@ -27,6 +27,8 @@ typedef enum { // тип выражения
     EXPR_INT, EXPR_FLOAT, EXPR_BOOL, EXPR_STRING, EXPR_IDENT,
     EXPR_BINARY, EXPR_UNARY,
     EXPR_CAST,
+    EXPR_SIZEOF, // A.1.13: sizeof(type) -- cast_type хранит тип
+    EXPR_TYPEOF, // A.1.13: typeof(expr) -- lhs хранит выражение
     EXPR_INDEX,
     EXPR_FIELD,
     EXPR_SCOPE,
